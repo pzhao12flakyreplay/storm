@@ -259,12 +259,11 @@
         <snakeyaml.version>1.11</snakeyaml.version>
         <httpclient.version>4.3.3</httpclient.version>
         <clojure.tools.cli.version>0.2.4</clojure.tools.cli.version>
-        <jctools.version>2.0.1</jctools.version>
         <disruptor.version>3.3.2</disruptor.version>
         <jgrapht.version>0.9.0</jgrapht.version>
         <guava.version>16.0.1</guava.version>
         <auto-service.version>1.0-rc3</auto-service.version>
-        <netty.version>3.9.9.Final</netty.version>
+        <netty.version>3.9.0.Final</netty.version>
         <sysout-over-slf4j.version>1.0.2</sysout-over-slf4j.version>
         <log4j-over-slf4j.version>1.6.6</log4j-over-slf4j.version>
         <log4j.version>2.8.2</log4j.version>
@@ -352,7 +351,6 @@
         <module>external/storm-autocreds</module>
         <module>external/storm-kafka</module>
         <module>external/storm-hdfs</module>
-        <module>external/storm-hdfs-blobstore</module>
         <module>external/storm-hbase</module>
         <module>external/storm-hive</module>
         <module>external/storm-jdbc</module>
@@ -365,7 +363,6 @@
         <module>external/storm-mqtt</module>
         <module>external/storm-mongodb</module>
         <module>external/storm-kafka-client</module>
-        <module>external/storm-kafka-migration</module>
         <module>external/storm-opentsdb</module>
         <module>external/storm-kafka-monitor</module>
         <module>external/storm-kinesis</module>
@@ -878,11 +875,6 @@
                 <version>${clojure.tools.cli.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.jctools</groupId>
-                <artifactId>jctools-core</artifactId>
-                <version>${jctools.version}</version>
-            </dependency>
-            <dependency>
                 <groupId>com.lmax</groupId>
                 <artifactId>disruptor</artifactId>
                 <version>${disruptor.version}</version>
@@ -1101,7 +1093,7 @@
                         <includes>
                             <include>${java.unit.test.include}</include>
                         </includes>
-                        <argLine>-Xmx3g -XX:+HeapDumpOnOutOfMemoryError</argLine>
+                        <argLine>-Xmx1536m</argLine>
                         <trimStackTrace>false</trimStackTrace>
                         <forkCount>1.0C</forkCount>
                         <reuseForks>true</reuseForks>

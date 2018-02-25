@@ -33,6 +33,7 @@ import static org.apache.storm.validation.ConfigValidationAnnotations.isNoDuplic
 import static org.apache.storm.validation.ConfigValidationAnnotations.isMapEntryCustom;
 
 import org.apache.storm.container.ResourceIsolationInterface;
+import org.apache.storm.metricstore.MetricStore;
 import org.apache.storm.nimbus.ITopologyActionNotifierPlugin;
 import org.apache.storm.scheduler.blacklist.reporters.IReporter;
 import org.apache.storm.scheduler.blacklist.strategies.IBlacklistStrategy;
@@ -1031,20 +1032,11 @@ public class DaemonConfig implements Validated {
         "storm.supervisor.medium.memory.grace.period.ms";
 
     /**
-     * Class implementing MetricStore.  Runs on Nimbus.
+     * Class implementing MetricStore.
      */
     @NotNull
-    @isString
-    // Validating class implementation could fail on non-Nimbus Daemons.  Nimbus will catch the class not found on startup
-    // and log an error message, so just validating this as a String for now.
+    @isImplementationOfClass(implementsClass = MetricStore.class)
     public static final String STORM_METRIC_STORE_CLASS = "storm.metricstore.class";
-
-    /**
-     * Class implementing WorkerMetricsProcessor.  Runs on Supervisors.
-     */
-    @NotNull
-    @isString
-    public static final String STORM_METRIC_PROCESSOR_CLASS = "storm.metricprocessor.class";
 
     /**
      * RocksDB file location. This setting is specific to the org.apache.storm.metricstore.rocksdb.RocksDbStore
@@ -1080,12 +1072,6 @@ public class DaemonConfig implements Validated {
      */
     @isInteger
     public static final String STORM_ROCKSDB_METRIC_DELETION_PERIOD_HOURS = "storm.metricstore.rocksdb.deletion_period_hours";
-
-    /**
-     * The number of hours a worker token is valid for.  This also sets how frequently worker tokens will be renewed.
-     */
-    @isPositiveNumber
-    public static String STORM_WORKER_TOKEN_LIFE_TIME_HOURS = "storm.worker.token.life.time.hours";
 
     // VALIDATION ONLY CONFIGS
     // Some configs inside Config.java may reference classes we don't want to expose in storm-client, but we still want to validate

@@ -128,9 +128,6 @@ import org.apache.storm.generated.WorkerMetricPoint;
 import org.apache.storm.generated.WorkerMetrics;
 import org.apache.storm.generated.WorkerResources;
 import org.apache.storm.generated.WorkerSummary;
-import org.apache.storm.generated.WorkerToken;
-import org.apache.storm.generated.WorkerTokenInfo;
-import org.apache.storm.generated.WorkerTokenServiceType;
 import org.apache.storm.logging.ThriftAccessLogger;
 import org.apache.storm.metric.ClusterMetricsConsumerExecutor;
 import org.apache.storm.metric.StormMetricsRegistry;
@@ -173,7 +170,6 @@ import org.apache.storm.security.auth.NimbusPrincipal;
 import org.apache.storm.security.auth.ReqContext;
 import org.apache.storm.security.auth.ThriftConnectionType;
 import org.apache.storm.security.auth.ThriftServer;
-import org.apache.storm.security.auth.workertoken.WorkerTokenManager;
 import org.apache.storm.stats.StatsUtil;
 import org.apache.storm.utils.BufferInputStream;
 import org.apache.storm.utils.ConfigUtils;
@@ -193,6 +189,8 @@ import org.apache.storm.validation.ConfigValidation;
 import org.apache.storm.zookeeper.ClientZookeeper;
 import org.apache.storm.zookeeper.Zookeeper;
 import org.apache.thrift.TException;
+import org.apache.zookeeper.ZooDefs;
+import org.apache.zookeeper.data.ACL;
 import org.json.simple.JSONValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -243,13 +241,17 @@ public class Nimbus implements Iface, Shutdownable, DaemonCommon {
     
     private static final String STORM_VERSION = VersionInfo.getVersion();
 
+    @VisibleForTesting
+    public static final List<ACL> ZK_ACLS = Arrays.asList(ZooDefs.Ids.CREATOR_ALL_ACL.get(0),
+            new ACL(ZooDefs.Perms.READ | ZooDefs.Perms.CREATE, ZooDefs.Ids.ANYONE_ID_UNSAFE));
+
     private static final Subject NIMBUS_SUBJECT = new Subject();
 
     static {
         NIMBUS_SUBJECT.getPrincipals().add(new NimbusPrincipal());
         NIMBUS_SUBJECT.setReadOnly();
     }
-
+    
     // TOPOLOGY STATE TRANSITIONS
     private static StormBase make(TopologyStatus status) {
         StormBase ret = new StormBase();
@@ -765,7 +767,6 @@ public class Nimbus implements Iface, Shutdownable, DaemonCommon {
         ret.addAll(Utils.OR(state.errorTopologies(), EMPTY_STRING_LIST));
         ret.addAll(Utils.OR(store.storedTopoIds(), EMPTY_STRING_SET));
         ret.addAll(Utils.OR(state.backpressureTopologies(), EMPTY_STRING_LIST));
-        ret.addAll(Utils.OR(state.idsOfTopologiesWithPrivateWorkerKeys(), EMPTY_STRING_SET));
         ret.removeAll(Utils.OR(state.activeStorms(), EMPTY_STRING_LIST));
         return ret;
     }
@@ -1012,14 +1013,11 @@ public class Nimbus implements Iface, Shutdownable, DaemonCommon {
             nimbus.shutdown();
             server.stop();
         }, 10);
-        if (AuthUtils.areWorkerTokensEnabledServer(server, conf)) {
-            nimbus.initWorkerTokenManager();
-        }
         LOG.info("Starting nimbus server for storm version '{}'", STORM_VERSION);
         server.serve();
         return nimbus;
     }
-
+    
     public static Nimbus launch(INimbus inimbus) throws Exception {
         Map<String, Object> conf = Utils.merge(Utils.readStormConfig(),
                 ConfigUtils.readYamlConfig("storm-cluster-auth.yaml", false));
@@ -1076,8 +1074,6 @@ public class Nimbus implements Iface, Shutdownable, DaemonCommon {
     private final List<ClusterMetricsConsumerExecutor> clusterConsumerExceutors;
     private final IGroupMappingServiceProvider groupMapper;
     private final IPrincipalToLocal principalToLocal;
-    //May be null if worker tokens are not supported by the thrift transport.
-    private WorkerTokenManager workerTokenManager;
 
     private static CuratorFramework makeZKClient(Map<String, Object> conf) {
         List<String> servers = (List<String>)conf.get(Config.STORM_ZOOKEEPER_SERVERS);
@@ -1091,7 +1087,11 @@ public class Nimbus implements Iface, Shutdownable, DaemonCommon {
     }
     
     private static IStormClusterState makeStormClusterState(Map<String, Object> conf) throws Exception {
-        return ClusterUtils.mkStormClusterState(conf, new ClusterStateContext(DaemonType.NIMBUS, conf));
+        List<ACL> acls = null;
+        if (Utils.isZkAuthenticationConfiguredStormServer(conf)) {
+            acls = ZK_ACLS;
+        }
+        return ClusterUtils.mkStormClusterState(conf, acls, new ClusterStateContext(DaemonType.NIMBUS));
     }
     
     public Nimbus(Map<String, Object> conf, INimbus inimbus) throws Exception {
@@ -1201,13 +1201,6 @@ public class Nimbus implements Iface, Shutdownable, DaemonCommon {
 
     private TopoCache getTopoCache() {
         return topoCache;
-    }
-
-    @VisibleForTesting
-    void initWorkerTokenManager() {
-        if (workerTokenManager == null) {
-            workerTokenManager = new WorkerTokenManager(conf, getStormClusterState());
-        }
     }
 
     private boolean isLeader() throws Exception {
@@ -2151,7 +2144,6 @@ public class Nimbus implements Iface, Shutdownable, DaemonCommon {
                 LOG.info("Cleaning up {}", topoId);
                 state.teardownHeartbeats(topoId);
                 state.teardownTopologyErrors(topoId);
-                state.removeAllPrivateWorkerKeys(topoId);
                 state.removeBackpressure(topoId);
                 rmDependencyJarsInTopology(topoId);
                 forceDeleteTopoDistDir(topoId);
@@ -2262,13 +2254,14 @@ public class Nimbus implements Iface, Shutdownable, DaemonCommon {
         }
         IStormClusterState state = stormClusterState;
         Collection<ICredentialsRenewer> renewers = credRenewers;
+        Object lock = credUpdateLock;
         Map<String, StormBase> assignedBases = state.topologyBases();
         if (assignedBases != null) {
             for (Entry<String, StormBase> entry: assignedBases.entrySet()) {
                 String id = entry.getKey();
                 String ownerPrincipal = entry.getValue().get_principal();
                 Map<String, Object> topoConf = Collections.unmodifiableMap(Utils.merge(conf, tryReadTopoConf(id, topoCache)));
-                synchronized(credUpdateLock) {
+                synchronized(lock) {
                     Credentials origCreds = state.credentials(id, null);
                     if (origCreds != null) {
                         Map<String, String> origCredsMap = origCreds.get_creds();
@@ -2277,8 +2270,6 @@ public class Nimbus implements Iface, Shutdownable, DaemonCommon {
                             LOG.info("Renewing Creds For {} with {} owned by {}", id, renewer, ownerPrincipal);
                             renewer.renew(newCredsMap, topoConf, ownerPrincipal);
                         }
-                        //Update worker tokens if needed
-                        upsertWorkerTokensInCreds(newCredsMap, ownerPrincipal, id);
                         if (!newCredsMap.equals(origCredsMap)) {
                             state.setCredentials(id, new Credentials(newCredsMap), topoConf);
                         }
@@ -2648,34 +2639,6 @@ public class Nimbus implements Iface, Shutdownable, DaemonCommon {
         }
     }
 
-    private void upsertWorkerTokensInCreds(Map<String, String> creds, String user, String topologyId) {
-        if (workerTokenManager != null) {
-            final long renewIfExpirationBefore = workerTokenManager.getMaxExpirationTimeForRenewal();
-            for (WorkerTokenServiceType type : WorkerTokenServiceType.values()) {
-                boolean shouldAdd = true;
-                WorkerToken oldToken = AuthUtils.readWorkerToken(creds, type);
-                if (oldToken != null) {
-                    try {
-                        WorkerTokenInfo info = AuthUtils.getWorkerTokenInfo(oldToken);
-                        if (info.is_set_expirationTimeMillis() || info.get_expirationTimeMillis() > renewIfExpirationBefore) {
-                            //Found an existing token and it is not going to expire any time soon, so don't bother adding in a new
-                            // token.
-                            shouldAdd = false;
-                        }
-                    } catch (Exception e) {
-                        //The old token could not be deserialized.  This is bad, but we are going to replace it anyways so just keep going.
-                        LOG.error("Could not deserialize token info", e);
-                    }
-                }
-                if (shouldAdd) {
-                    AuthUtils.setWorkerToken(creds, workerTokenManager.createOrUpdateTokenFor(type, user, topologyId));
-                }
-            }
-            //Remove any expired keys after possibly inserting new ones.
-            stormClusterState.removeExpiredPrivateWorkerKeys(topologyId);
-        }
-    }
-
     @Override
     public void submitTopologyWithOpts(String topoName, String uploadedJarLocation, String jsonConf, StormTopology topology,
             SubmitOptions options)
@@ -2768,7 +2731,6 @@ public class Nimbus implements Iface, Shutdownable, DaemonCommon {
                 for (INimbusCredentialPlugin autocred: nimbusAutocredPlugins) {
                     autocred.populateCredentials(creds, finalConf);
                 }
-                upsertWorkerTokensInCreds(creds, topologyPrincipal, topoId);
             }
             
             if (ObjectReader.getBoolean(conf.get(Config.SUPERVISOR_RUN_WORKER_AS_USER), false) &&
@@ -3148,14 +3110,6 @@ public class Nimbus implements Iface, Shutdownable, DaemonCommon {
             }
             checkAuthorization(topoName, topoConf, "uploadNewCredentials");
             synchronized(credUpdateLock) {
-                //Merge the old credentials so creds nimbus created are not lost.
-                // And in case the user forgot to upload something important this time.
-                Credentials origCreds = state.credentials(topoId, null);
-                if (origCreds != null) {
-                    Map<String, String> mergedCreds = origCreds.get_creds();
-                    mergedCreds.putAll(credentials.get_creds());
-                    credentials.set_creds(mergedCreds);
-                }
                 state.setCredentials(topoId, credentials, topoConf);
             }
         } catch (Exception e) {

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -30,7 +30,6 @@ import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
-import java.util.function.BooleanSupplier;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.storm.Config;
@@ -145,19 +144,19 @@ public class ConfigUtils {
         throw new IllegalArgumentException("Illegal topology.stats.sample.rate in conf: " + rate);
     }
 
-    public static BooleanSupplier mkStatsSampler(Map<String, Object> conf) {
+    public static Callable<Boolean> mkStatsSampler(Map<String, Object> conf) {
         return evenSampler(samplingRate(conf));
     }
 
-    public static BooleanSupplier evenSampler(final int samplingFreq) {
+    public static Callable<Boolean> evenSampler(final int samplingFreq) {
         final Random random = new Random();
 
-        return new BooleanSupplier() {
+        return new Callable<Boolean>() {
             private int curr = -1;
             private int target = random.nextInt(samplingFreq);
 
             @Override
-            public boolean getAsBoolean() {
+            public Boolean call() throws Exception {
                 curr++;
                 if (curr >= samplingFreq) {
                     curr = 0;
